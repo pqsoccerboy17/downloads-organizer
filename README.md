@@ -81,11 +81,11 @@ Edit `src/downloads_organizer/config.py` to customize:
 ```
 ~/Google Drive/Personal/Media/
 ├── 2024/
-│   ├── January/
+│   ├── 01_January/
 │   │   ├── Photos/
 │   │   ├── Videos/
 │   │   └── Audio/
-│   └── February/
+│   └── 02_February/
 │       └── ...
 └── 2025/
     └── ...
