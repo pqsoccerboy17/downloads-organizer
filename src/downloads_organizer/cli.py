@@ -28,7 +28,8 @@ def main():
     media_parser = subparsers.add_parser("media", help="Organize media files")
     media_parser.add_argument("--dry-run", action="store_true", help="Preview without moving files")
     media_parser.add_argument("--yes", "-y", action="store_true", help="Auto-confirm all actions")
-    media_parser.add_argument("--audit", action="store_true", help="Audit existing folders")
+    media_parser.add_argument("--audit", action="store_true", help="Audit-only mode (skip source folders)")
+    media_parser.add_argument("--no-audit", action="store_true", help="Skip audit phase (faster)")
     media_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
 
     # Watcher
@@ -61,6 +62,7 @@ def main():
             dry_run=args.dry_run,
             auto_yes=args.yes,
             audit=args.audit,
+            no_audit=args.no_audit,
             verbose=args.verbose,
         )
 

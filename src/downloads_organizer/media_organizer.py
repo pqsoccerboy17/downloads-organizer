@@ -47,6 +47,7 @@ def run(
     dry_run: bool = False,
     auto_yes: bool = False,
     audit: bool = False,
+    no_audit: bool = False,
     verbose: bool = False,
     source_path: Optional[Path] = None,
     dest_base: Optional[Path] = None,
@@ -60,6 +61,7 @@ def run(
         dry_run: Preview without moving files
         auto_yes: Auto-confirm all actions
         audit: Audit-only mode (skip source folders, only audit existing)
+        no_audit: Skip audit phase entirely (faster, just process source folders)
         verbose: Enable verbose logging
         source_path: Custom source folder (overrides defaults)
         dest_base: Custom destination base folder
@@ -215,53 +217,59 @@ def run(
             if errors:
                 logger.warning(f"Errors: {len(errors)} files")
 
-    # Run audit (always run unless --no-audit would be specified)
-    logger.info("")
-    logger.info("=" * 60)
-    logger.info("RUNNING FOLDER AUDIT...")
-    logger.info("=" * 60)
-    logger.info("Recursively scanning Media folder for misplaced files...")
-
-    moved_files, total_scanned = scan_and_audit_folders(
-        auto_yes=auto_yes,
-        dry_run=dry_run,
-        dest_base=dest_base,
-        event=event,
-        tags=tags if tags else None,
-    )
-
-    for move in moved_files:
-        update_stats(move)
-
-    # Report results
-    logger.info("")
-    logger.info("=" * 60)
-    if dry_run:
-        logger.info("DRY RUN PREVIEW - No files were actually moved")
+    # Run audit (skip if --no-audit is specified)
+    if no_audit:
+        logger.info("")
+        logger.info("Skipping audit phase (--no-audit)")
+        moved_files = []
+        total_scanned = 0
     else:
-        logger.info("AUDIT COMPLETE!")
-    logger.info(f"Scanned: {total_scanned} files")
-    logger.info(f"{'Would move' if dry_run else 'Moved'}: {len(moved_files)} files")
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("RUNNING FOLDER AUDIT...")
+        logger.info("=" * 60)
+        logger.info("Recursively scanning Media folder for misplaced files...")
 
-    if moved_files:
-        # Group by type
-        by_type: Dict[str, List[Dict]] = {}
+        moved_files, total_scanned = scan_and_audit_folders(
+            auto_yes=auto_yes,
+            dry_run=dry_run,
+            dest_base=dest_base,
+            event=event,
+            tags=tags if tags else None,
+        )
+
         for move in moved_files:
-            mtype = move.get("media_type", "Unknown")
-            if mtype not in by_type:
-                by_type[mtype] = []
-            by_type[mtype].append(move)
+            update_stats(move)
 
-        for mtype, files in sorted(by_type.items()):
-            logger.info(f"{mtype} ({len(files)} files):")
-            for move in files[:5]:
-                logger.info(
-                    f"  {move['file']} -> {move.get('year', '?')}/{move.get('month', 0):02d}"
-                )
-            if len(files) > 5:
-                logger.info(f"  ... and {len(files) - 5} more")
-    else:
-        logger.info("No misplaced files found - all files are organized correctly!")
+        # Report results
+        logger.info("")
+        logger.info("=" * 60)
+        if dry_run:
+            logger.info("DRY RUN PREVIEW - No files were actually moved")
+        else:
+            logger.info("AUDIT COMPLETE!")
+        logger.info(f"Scanned: {total_scanned} files")
+        logger.info(f"{'Would move' if dry_run else 'Moved'}: {len(moved_files)} files")
+
+        if moved_files:
+            # Group by type
+            by_type: Dict[str, List[Dict]] = {}
+            for move in moved_files:
+                mtype = move.get("media_type", "Unknown")
+                if mtype not in by_type:
+                    by_type[mtype] = []
+                by_type[mtype].append(move)
+
+            for mtype, files in sorted(by_type.items()):
+                logger.info(f"{mtype} ({len(files)} files):")
+                for move in files[:5]:
+                    logger.info(
+                        f"  {move['file']} -> {move.get('year', '?')}/{move.get('month', 0):02d}"
+                    )
+                if len(files) > 5:
+                    logger.info(f"  ... and {len(files) - 5} more")
+        else:
+            logger.info("No misplaced files found - all files are organized correctly!")
 
     # Date source breakdown
     logger.info("")
