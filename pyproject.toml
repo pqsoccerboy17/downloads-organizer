@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "downloads-organizer"
+version = "1.0.0"
+description = "Unified Downloads folder organizer for PDFs, media, and documents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "pqsoccerboy17"},
+]
+keywords = ["automation", "organization", "pdf", "media", "downloads"]
+
+dependencies = [
+    # PDF processing
+    "PyMuPDF>=1.23.0",
+    # File watching
+    "watchdog>=3.0.0",
+    # Progress bars
+    "tqdm>=4.66.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+downloads-organizer = "downloads_organizer.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/downloads_organizer"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
