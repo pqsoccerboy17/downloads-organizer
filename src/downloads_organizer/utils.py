@@ -42,22 +42,24 @@ def setup_logging(name: str = "downloads_organizer", verbose: bool = False) -> l
     if logger.handlers:
         return logger
 
-    # File handler
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+    # Check if stdout is redirected to a file (launchd does this)
+    stdout_is_tty = sys.stdout.isatty()
+
+    # File handler - always add for persistent logs
     file_handler = logging.FileHandler(config.LOG_FILE)
     file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(
-        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-    )
-
-    # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
-    console_handler.setFormatter(
-        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-    )
-
+    file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
+
+    # Console handler - only add if running interactively
+    # (avoids duplicates when launchd redirects stdout to the log file)
+    if stdout_is_tty:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
 
     return logger
 

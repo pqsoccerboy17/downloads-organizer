@@ -24,11 +24,11 @@ from typing import Optional, Set
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 
-from . import config
-from . import utils
-from . import notifications
+from downloads_organizer import config
+from downloads_organizer import utils
+from downloads_organizer import notifications
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("watcher")
 
 # Track when organizers were last run (prevent rapid-fire runs)
 last_pdf_run = 0
@@ -51,15 +51,18 @@ def run(
     """
     utils.setup_logging("watcher", verbose)
 
-    # Verify Downloads folder exists
-    if not config.DOWNLOADS_FOLDER.exists():
-        logger.error(f"Downloads folder not found: {config.DOWNLOADS_FOLDER}")
+    # Verify at least one source folder exists
+    available_folders = [f for f in config.SOURCE_FOLDERS if f.exists()]
+    if not available_folders:
+        logger.error(f"No source folders found. Checked: {config.SOURCE_FOLDERS}")
         return
 
     logger.info("=" * 60)
     logger.info("Downloads Folder Watcher")
     logger.info("=" * 60)
-    logger.info(f"Watching: {config.DOWNLOADS_FOLDER}")
+    logger.info("Watching folders:")
+    for folder in available_folders:
+        logger.info(f"  - {folder}")
     logger.info(f"Debounce delay: {config.DEBOUNCE_SECONDS} seconds")
     logger.info(f"Periodic scan: Every {config.PERIODIC_SCAN_INTERVAL} seconds")
 
@@ -76,9 +79,15 @@ def run(
     logger.info("=" * 60)
 
     # Create event handler and observer
-    event_handler = DownloadsHandler(pdf_enabled=watch_pdf, media_enabled=watch_media)
+    event_handler = DownloadsHandler(
+        pdf_enabled=watch_pdf,
+        media_enabled=watch_media,
+        watched_folders=available_folders
+    )
     observer = Observer()
-    observer.schedule(event_handler, str(config.DOWNLOADS_FOLDER), recursive=False)
+    for folder in available_folders:
+        observer.schedule(event_handler, str(folder), recursive=False)
+        logger.info(f"Scheduled watcher for: {folder}")
 
     # Start periodic scan thread
     scan_thread = threading.Thread(
@@ -110,10 +119,16 @@ class DownloadsHandler(FileSystemEventHandler):
     Handles new file detection and routes to appropriate organizer.
     """
 
-    def __init__(self, pdf_enabled: bool = True, media_enabled: bool = True):
+    def __init__(
+        self,
+        pdf_enabled: bool = True,
+        media_enabled: bool = True,
+        watched_folders: Optional[list] = None
+    ):
         super().__init__()
         self.pdf_enabled = pdf_enabled
         self.media_enabled = media_enabled
+        self.watched_folders = watched_folders or [config.DOWNLOADS_FOLDER]
         self.pending_files: Set[str] = set()
         self.lock = threading.Lock()
 
@@ -143,17 +158,40 @@ class DownloadsHandler(FileSystemEventHandler):
 
         ext = file_path.suffix.lower()
 
-        # Check if this is a PDF
-        if ext == config.PDF_EXTENSION and self.pdf_enabled:
-            logger.info(f"New PDF {event_type}: {file_path.name}")
-            self.schedule_processing(file_path, "pdf")
-            return
+        # Check if this is a PDF (by extension or content)
+        if self.pdf_enabled:
+            if ext == config.PDF_EXTENSION:
+                logger.info(f"New PDF {event_type}: {file_path.name}")
+                self.schedule_processing(file_path, "pdf")
+                return
+            # Check for PDF without extension (common with Chrome downloads)
+            elif not ext or ext not in config.ALL_MEDIA_EXTENSIONS:
+                if self._is_pdf_by_content(file_path):
+                    logger.info(f"New PDF (no extension) {event_type}: {file_path.name}")
+                    # Rename to add .pdf extension
+                    new_path = file_path.with_suffix('.pdf')
+                    try:
+                        file_path.rename(new_path)
+                        logger.info(f"Renamed to: {new_path.name}")
+                        self.schedule_processing(new_path, "pdf")
+                    except Exception as e:
+                        logger.error(f"Failed to rename {file_path.name}: {e}")
+                    return
 
         # Check if this is a media file
         if ext in config.ALL_MEDIA_EXTENSIONS and self.media_enabled:
             logger.info(f"New media file {event_type}: {file_path.name}")
             self.schedule_processing(file_path, "media")
             return
+
+    def _is_pdf_by_content(self, file_path: Path) -> bool:
+        """Check if file is a PDF by reading magic bytes."""
+        try:
+            with open(file_path, 'rb') as f:
+                header = f.read(5)
+                return header == b'%PDF-'
+        except Exception:
+            return False
 
     def schedule_processing(self, file_path: Path, file_type: str) -> None:
         """Schedule a file for processing after debounce delay."""
@@ -231,32 +269,54 @@ class DownloadsHandler(FileSystemEventHandler):
             logger.error(f"Error running {file_type} organizer: {e}")
 
     def _run_pdf_organizer(self) -> None:
-        """Run the PDF organizer on Downloads folder."""
-        from . import pdf_organizer
+        """Run the PDF organizer as a subprocess to avoid module caching issues."""
+        import subprocess
 
-        # Count PDFs before
-        pdf_count_before = len(list(config.DOWNLOADS_FOLDER.glob("*.pdf")))
+        # Count PDFs before (across all source folders)
+        pdf_count_before = sum(
+            len(list(folder.glob("*.pdf")))
+            for folder in config.SOURCE_FOLDERS if folder.exists()
+        )
         logger.info(f"Running PDF organizer (PDFs before: {pdf_count_before})")
 
         try:
-            moved, skipped, errors = pdf_organizer.run(auto_yes=True)
+            # Run as subprocess to ensure fresh module state
+            result = subprocess.run(
+                [
+                    "/usr/bin/python3",
+                    "/Users/mdmac/downloads-organizer/src/downloads_organizer/pdf_organizer.py",
+                    "--yes"
+                ],
+                env={
+                    "PYTHONPATH": "/Users/mdmac/downloads-organizer/src",
+                    "HOME": "/Users/mdmac",
+                    "PATH": "/usr/bin:/bin"
+                },
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
 
             # Count PDFs after
-            pdf_count_after = len(list(config.DOWNLOADS_FOLDER.glob("*.pdf")))
+            pdf_count_after = sum(
+                len(list(folder.glob("*.pdf")))
+                for folder in config.SOURCE_FOLDERS if folder.exists()
+            )
             files_moved = pdf_count_before - pdf_count_after
 
-            logger.info(f"PDF organizer complete (moved: {files_moved}, skipped: {skipped}, errors: {errors})")
+            logger.info(f"PDF organizer complete (moved: {files_moved})")
 
-            if pdf_count_before > 0 and files_moved == 0:
-                logger.warning("PDFs found in Downloads but none were moved")
-                logger.warning("Check organizer output for skip/error messages")
+            if result.returncode != 0:
+                logger.error(f"PDF organizer error: {result.stderr}")
 
+        except subprocess.TimeoutExpired:
+            logger.error("PDF organizer timed out after 120 seconds")
         except Exception as e:
             logger.error(f"PDF organizer failed: {e}")
 
     def _run_media_organizer(self) -> None:
         """Run the media organizer on Downloads folder."""
-        from . import media_organizer
+        from downloads_organizer import media_organizer
 
         # Count media files before
         media_count_before = sum(
@@ -289,7 +349,7 @@ class DownloadsHandler(FileSystemEventHandler):
 
     def periodic_scan(self) -> None:
         """
-        Periodically scan Downloads folder and process files (fallback mechanism).
+        Periodically scan all watched folders and process files (fallback mechanism).
 
         This provides a safety net in case real-time file detection misses files due to:
         - Browser download quirks (Chrome, Safari handle temp files differently)
@@ -303,44 +363,49 @@ class DownloadsHandler(FileSystemEventHandler):
             try:
                 time.sleep(config.PERIODIC_SCAN_INTERVAL)
 
-                if not config.DOWNLOADS_FOLDER.exists():
-                    logger.warning(f"Downloads folder not found: {config.DOWNLOADS_FOLDER}")
-                    continue
-
                 current_time = time.time()
                 min_age = config.DEBOUNCE_SECONDS + 5
 
-                # Scan for PDFs
-                if self.pdf_enabled:
-                    pdfs = list(config.DOWNLOADS_FOLDER.glob("*.pdf"))
-                    old_pdfs = [
-                        pdf for pdf in pdfs
-                        if current_time - pdf.stat().st_mtime > min_age
-                    ]
-                    if old_pdfs:
-                        logger.info(f"Periodic scan: Found {len(old_pdfs)} PDF(s), running organizer...")
-                        for pdf in old_pdfs[:5]:
-                            age = int(current_time - pdf.stat().st_mtime)
-                            logger.debug(f"  - {pdf.name} (age: {age}s)")
-                        self._run_organizer("pdf")
+                # Scan all watched folders
+                all_pdfs = []
+                all_media = []
 
-                # Scan for media files
-                if self.media_enabled:
-                    media_files = []
-                    for ext in config.ALL_MEDIA_EXTENSIONS:
-                        media_files.extend(config.DOWNLOADS_FOLDER.glob(f"*{ext}"))
-                        media_files.extend(config.DOWNLOADS_FOLDER.glob(f"*{ext.upper()}"))
+                for folder in self.watched_folders:
+                    if not folder.exists():
+                        continue
 
-                    old_media = [
-                        f for f in media_files
-                        if current_time - f.stat().st_mtime > min_age
-                    ]
-                    if old_media:
-                        logger.info(f"Periodic scan: Found {len(old_media)} media file(s), running organizer...")
-                        for media in old_media[:5]:
-                            age = int(current_time - media.stat().st_mtime)
-                            logger.debug(f"  - {media.name} (age: {age}s)")
-                        self._run_organizer("media")
+                    # Collect PDFs
+                    if self.pdf_enabled:
+                        pdfs = list(folder.glob("*.pdf"))
+                        all_pdfs.extend([
+                            pdf for pdf in pdfs
+                            if current_time - pdf.stat().st_mtime > min_age
+                        ])
+
+                    # Collect media files
+                    if self.media_enabled:
+                        for ext in config.ALL_MEDIA_EXTENSIONS:
+                            media_files = list(folder.glob(f"*{ext}")) + list(folder.glob(f"*{ext.upper()}"))
+                            all_media.extend([
+                                f for f in media_files
+                                if current_time - f.stat().st_mtime > min_age
+                            ])
+
+                # Process PDFs
+                if all_pdfs:
+                    logger.info(f"Periodic scan: Found {len(all_pdfs)} PDF(s) across all folders, running organizer...")
+                    for pdf in all_pdfs[:5]:
+                        age = int(current_time - pdf.stat().st_mtime)
+                        logger.debug(f"  - {pdf.name} (age: {age}s)")
+                    self._run_organizer("pdf")
+
+                # Process media
+                if all_media:
+                    logger.info(f"Periodic scan: Found {len(all_media)} media file(s) across all folders, running organizer...")
+                    for media in all_media[:5]:
+                        age = int(current_time - media.stat().st_mtime)
+                        logger.debug(f"  - {media.name} (age: {age}s)")
+                    self._run_organizer("media")
 
             except OSError as e:
                 logger.error(f"File system error in periodic scan: {e}")
@@ -348,3 +413,7 @@ class DownloadsHandler(FileSystemEventHandler):
             except Exception as e:
                 logger.error(f"Unexpected error in periodic scan: {e}")
                 time.sleep(60)
+
+
+if __name__ == "__main__":
+    run()

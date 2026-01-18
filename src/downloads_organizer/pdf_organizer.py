@@ -32,9 +32,9 @@ try:
 except ImportError:
     fitz = None
 
-from . import config
-from . import utils
-from . import notifications
+from downloads_organizer import config
+from downloads_organizer import utils
+from downloads_organizer import notifications
 
 logger = logging.getLogger(__name__)
 
@@ -334,30 +334,36 @@ def categorize_document(filename: str, text: str) -> Tuple[Optional[str], int]:
     Returns:
         Tuple of (category_id, confidence_score) or (None, 0)
     """
-    if not text or text == "NO_TEXT" or text.startswith("ERROR:"):
-        return None, 0
-
     filename_upper = filename.upper()
-    text_upper = text.upper()
 
-    # Layer 1: Global exclusions
+    # Handle missing/empty text - try filename-only categorization
+    no_text = not text or text == "NO_TEXT" or text.startswith("ERROR:")
+    text_upper = "" if no_text else text.upper()
+
+    # Layer 1: Global exclusions (check filename even without text)
     for exclusion in GLOBAL_EXCLUSIONS:
-        if exclusion in filename_upper or exclusion in text_upper:
+        if exclusion in filename_upper or (text_upper and exclusion in text_upper):
             return None, 0
 
     # Layer 2: Try each category
     for category_id, cat_config in DOCUMENT_CATEGORIES.items():
         # Check category-specific exclusions
         if 'exclude_patterns' in cat_config:
-            excluded = any(p in text_upper or p in filename_upper for p in cat_config['exclude_patterns'])
+            excluded = any(p in filename_upper or (text_upper and p in text_upper) for p in cat_config['exclude_patterns'])
             if excluded:
                 continue
 
         filename_match = any(p.upper() in filename_upper for p in cat_config['filename_patterns'])
-        content_match = any(p in text_upper for p in cat_config['patterns'])
+        content_match = text_upper and any(p in text_upper for p in cat_config['patterns'])
 
         if filename_match or content_match:
-            confidence = 95 if (filename_match and content_match) else 85
+            # Lower confidence for filename-only matches (scanned PDFs)
+            if filename_match and content_match:
+                confidence = 95
+            elif filename_match and no_text:
+                confidence = 75  # Filename match but couldn't read PDF content
+            else:
+                confidence = 85
             return category_id, confidence
 
     return None, 0
@@ -628,7 +634,7 @@ def process_downloads(
     auto_yes: bool = False,
 ) -> Tuple[List[dict], List[dict], List[str]]:
     """
-    Process PDF files in the Downloads folder.
+    Process PDF files in all source folders (Downloads, Desktop, Drive Inbox).
 
     Returns:
         Tuple of (moved_files, categorized_files, uncategorized_files)
@@ -637,16 +643,20 @@ def process_downloads(
     categorized_files = []
     uncategorized_files = []
 
-    if not config.DOWNLOADS_FOLDER.exists():
-        logger.warning(f"Downloads folder not found: {config.DOWNLOADS_FOLDER}")
-        return moved_files, categorized_files, uncategorized_files
+    # Collect PDFs from all source folders
+    pdf_files = []
+    for folder in config.SOURCE_FOLDERS:
+        if folder.exists():
+            folder_pdfs = list(folder.glob("*.pdf"))
+            if folder_pdfs:
+                logger.info(f"Found {len(folder_pdfs)} PDF files in {folder.name}")
+                pdf_files.extend(folder_pdfs)
 
-    pdf_files = list(config.DOWNLOADS_FOLDER.glob("*.pdf"))
     if not pdf_files:
-        logger.info("No PDF files in Downloads")
+        logger.info("No PDF files found in any source folder")
         return moved_files, categorized_files, uncategorized_files
 
-    logger.info(f"Found {len(pdf_files)} PDF files in Downloads")
+    logger.info(f"Found {len(pdf_files)} total PDF files across all source folders")
 
     for pdf_file in pdf_files:
         result = process_single_pdf(pdf_file, dry_run=dry_run)
@@ -760,7 +770,8 @@ def process_general_document(pdf_file: Path, text: str, dry_run: bool = False) -
     """Process a general (non-bank) document."""
     category_id, confidence = categorize_document(pdf_file.name, text)
 
-    if not category_id or confidence < 90:
+    # Accept 75%+ confidence (allows filename-only matches for scanned PDFs)
+    if not category_id or confidence < 75:
         return None
 
     cat_config = DOCUMENT_CATEGORIES[category_id]
@@ -929,3 +940,14 @@ def print_summary(
         print("\nNo files to organize.")
 
     print("=" * 60)
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="PDF Organizer for tax documents")
+    parser.add_argument("--dry-run", action="store_true", help="Preview without moving")
+    parser.add_argument("--yes", "-y", action="store_true", help="Auto-confirm all actions")
+    parser.add_argument("--audit", action="store_true", help="Audit existing folders")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    args = parser.parse_args()
+    run(dry_run=args.dry_run, auto_yes=args.yes, audit=args.audit, verbose=args.verbose)

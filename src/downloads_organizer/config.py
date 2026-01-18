@@ -21,7 +21,11 @@ GOOGLE_DRIVE_BASE = HOME / "Library/CloudStorage/GoogleDrive-michaelduncan17@gma
 DOWNLOADS_FOLDER = HOME / "Downloads"
 DESKTOP_FOLDER = HOME / "Desktop"
 
-SOURCE_FOLDERS = [DOWNLOADS_FOLDER, DESKTOP_FOLDER]
+# Google Drive Inbox - for documents uploaded directly to Drive from any device
+DRIVE_INBOX_FOLDER = GOOGLE_DRIVE_BASE / "00_Inbox"
+
+# All source folders (watcher will monitor these for new files)
+SOURCE_FOLDERS = [DOWNLOADS_FOLDER, DESKTOP_FOLDER, DRIVE_INBOX_FOLDER]
 
 # =============================================================================
 # PDF ORGANIZER CONFIGURATION
